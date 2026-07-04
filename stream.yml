@@ -1,0 +1,68 @@
+name: Ultimate Live Stream API
+
+on:
+  workflow_dispatch:       # ম্যানুয়াল বাটনের জন্য
+  repository_dispatch:     # cron-job.org ওয়েববুকের জন্য
+    types: [start-live] 
+
+jobs:
+  vertical-stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # 6 ঘন্টা লিমিট
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    # 5 ঘণ্টা 45 মিনিট (20700 sec) থেকে 5 ঘণ্টা 55 মিনিট (21300 sec) এর মাঝে রেন্ডম টাইম সেট 
+    - name: Set Random Target Duration
+      id: duration_calc
+      run: |
+        R_TIME=$((RANDOM % 601)) 
+        TOTAL=$((20700 + R_TIME))
+        echo "duration=$TOTAL" >> $GITHUB_OUTPUT
+        echo "Stream will run for $TOTAL seconds"
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install Python Libraries
+      run: pip install -r requirements.txt
+
+    - name: Create Broadcast via API
+      id: api_setup
+      env:
+        CLIENT_ID: ${{ secrets.CLIENT_ID }}
+        CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+        REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+      run: python autostream.py
+
+    - name: Install FFmpeg & Get Video
+      env:
+        VIDEO_URL: ${{ secrets.VIDEO_URL }}
+      run: |
+        sudo apt-get update && sudo apt-get install -y ffmpeg
+        wget -O video.mp4 "$VIDEO_URL"
+
+    # মাঝখানের যেকোনো জায়গা থেকে ভিডিও স্টার্ট হয়ে পরে লুপ হবে 
+    - name: Start Video Loop (Random Start)
+      env:
+        RTMP_URL: ${{ steps.api_setup.outputs.server_url }}
+        KEY: ${{ steps.api_setup.outputs.stream_key }}
+        TIME: ${{ steps.duration_calc.outputs.duration }}
+      run: |
+        # ভিডিও দৈর্ঘ্য চেক করে শুরুর স্থান নির্বাচন
+        VID_LEN=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video.mp4 | cut -d. -f1)
+        MAX_START=$((VID_LEN - 10))
+        R_START=$((RANDOM % MAX_START))
+        
+        echo "# Custom Playlist" > list.txt
+        echo "file 'video.mp4'" >> list.txt
+        echo "inpoint $R_START" >> list.txt
+        
+        for i in {1..70}; do echo "file 'video.mp4'" >> list.txt; done
+
+        # আসল ব্রডকাস্টিং কোড (ভিডিও রেজোলিউশন চেঞ্জ করা ছাড়া স্ট্রিমিং)
+        ffmpeg -re -f concat -safe 0 -i list.txt -t $TIME -c:v libx264 -preset veryfast -b:v 3000k -maxrate 3000k -bufsize 6000k -pix_fmt yuv420p -g 50 -c:a aac -b:a 128k -ar 44100 -f flv "$RTMP_URL/$KEY"
